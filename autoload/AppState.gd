@@ -49,9 +49,13 @@ func set_client_id(value: String) -> void:
 	_save_preferences()
 
 func set_campaign(id: String, display_name_value: String = "") -> void:
+	if campaign_id != id:
+		owner_client_id = ""
+		player_actor_id = ""
+		selected_entity_id = ""
+		current_state = {}
 	campaign_id = id
 	campaign_name = display_name_value
-	selected_entity_id = ""
 	campaign_changed.emit(id)
 
 func set_player_actor(actor_id: String) -> void:
