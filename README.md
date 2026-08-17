@@ -1,152 +1,124 @@
 # GodotRPGEngine
 
-A modern **Godot 4.7** player client for [`hasnocool/dnd-rpg-engine`](https://github.com/hasnocool/dnd-rpg-engine).
+A modern **Godot 4.7** player client for [`hasnocool/dnd-rpg-engine`](https://github.com/hasnocool/dnd-rpg-engine). The Python engine owns campaign truth, rules, combat, movement validation, time, AI, progression, persistence, visibility, and multiplayer ownership; Godot renders authoritative state and submits intent.
 
-The project is intentionally a presentation/client layer. The Python RPG engine remains the authority for campaign state, rules, movement validation, combat, timing, AI, resources, progression, persistence, visibility, and multiplayer ownership. Godot renders that state and submits commands.
+## Current gameplay client
 
-## What the redesign includes
-
-- Modern campaign library and server connection screen.
-- Campaign creation with all engine timing modes.
-- Session join/rejoin before gameplay so persisted campaigns remain controllable after reconnect/restart.
-- Dedicated **Create Character / Hero** workflow driven by the engine's live character catalog.
-- Six ability scores, class selection, species/background IDs, and starting equipment.
-- Tactical 2D world renderer with pan/zoom, grid, entity tokens, player/target highlighting, HP bars, and area filtering.
-- Click-to-move and right-click attack routed through authoritative engine commands.
-- Player hotbar for attack, interact, wait, and hero management.
-- Party rail, entity inspector, live world status, connection status, and story/event feed.
-- WebSocket state/event/ack processing with reconnect and throttled authoritative state refresh.
-- Non-blocking REST requests using independent `HTTPRequest` nodes, allowing concurrent UI requests without blocking the main thread.
-- Asset-free procedural presentation so a fresh clone is immediately runnable before custom art is added.
+- Campaign library, creation, join/rejoin, reconnect, REST + WebSocket transport.
+- Engine-driven Create Character / Hero workflow.
+- Tactical 2D world with pan/zoom, selection, click-to-move and attack commands.
+- Party rail, inspector, hotbar, world status, story/event feed.
+- `PlayerRuntime` character sheet with progression, resources, inventory/equipment, conditions, rests, equip/unequip, resource spend and level-up lifecycle calls.
+- `VisualRuntime` actor-scoped world presentation with runtime bindings, imported maps, fog/path overlays, scene transitions, VFX and packaged audio.
+- Procedural visuals remain the fallback, so a fresh clone runs without an art pack.
 
 ## v0.2 — Authoritative Player Runtime
 
-The next gameplay layer is now integrated through the `PlayerRuntime` autoload. It activates automatically when the server resolves the local player's actor and adds a compact runtime dock plus a detailed `Tab` character sheet.
+`PlayerRuntime` adds the `Tab` character sheet and lifecycle controls. Server-described actions are executable only when the server supplies an explicit command dictionary; Godot never infers trusted rules from labels or IDs.
 
-The runtime currently provides:
+See [`docs/PLAYER_RUNTIME.md`](docs/PLAYER_RUNTIME.md).
 
-- live hero/class/level/HP presentation;
-- full ability-score and progression summary;
-- tracked class resources;
-- inventory and equipped-slot display;
-- active conditions when exposed by the authoritative entity;
-- catalog-backed rest profiles and equipment labels;
-- server-authoritative rest, equip, unequip, resource-spend, and level-up controls;
-- owner-aware level-up authorization;
-- actor-scoped WorldPlatform runtime snapshots;
-- initial Journal / Known World Facts surfacing for quest/objective/dialogue/scene facts;
-- forward-compatible server-described action palette support.
+## v0.3 — Visual World Runtime
 
-A described action is only executable when the server supplies an explicit command envelope. Godot will not infer combat/rules commands from labels or IDs.
+`VisualRuntime` adapts the WorldPlatformEngine actor-scoped `RuntimeSnapshot` into `WorldView`.
 
-See [`docs/PLAYER_RUNTIME.md`](docs/PLAYER_RUNTIME.md) for the authority model and extension points.
+v0.3 adds:
+
+- knowledge-scoped entity rendering: when a runtime snapshot exists, `WorldView` uses its entity set instead of merging broader campaign entities;
+- packaged `VisualBinding.sprite` rendering with procedural-token fallback;
+- optional frame animation through binding metadata;
+- map/backdrop textures with optional world-space bounds;
+- server-described hidden fog cells/regions;
+- authoritative path overlays when published by runtime facts;
+- `active_map_id` transition fades and camera recentering;
+- WebSocket-event presentation VFX;
+- packaged one-shot audio and map ambience hooks;
+- strict existing-`res://` asset selection only—no arbitrary filesystem or remote resource loading.
+
+See [`docs/VISUAL_RUNTIME.md`](docs/VISUAL_RUNTIME.md) for the binding/fact contract and examples.
 
 ## Architecture
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│                    GODOT 4.7 CLIENT                      │
-│                                                          │
-│  Campaign Lobby  Hero Creator  Tactical World  HUD/UX   │
-│          │             │            │          │         │
-│          └─────────────┴──────┬─────┴──────────┘         │
-│                               │                           │
-│          PlayerRuntime + RPGClient / AppState             │
-└───────────────────────────────┼───────────────────────────┘
-                                │ REST + WebSocket
-                                ▼
-┌──────────────────────────────────────────────────────────┐
-│                  dnd-rpg-engine server                   │
-│                                                          │
-│ Rules • State • Events • Commands • AI • Time • Saves   │
-│ Character Lifecycle • Knowledge • Runtime Snapshots     │
-└──────────────────────────────────────────────────────────┘
+Godot UI / WorldView
+       │
+       ├── PlayerRuntime ── character lifecycle presentation
+       ├── VisualRuntime ── RuntimeSnapshot / VisualBinding presentation
+       │
+       └── RPGClient / AppState
+                    │
+              REST + WebSocket
+                    │
+                    ▼
+             dnd-rpg-engine
+   Rules • State • Knowledge • Runtime
 ```
 
-The client follows one rule: **the engine owns truth; Godot renders truth**. A movement, attack, rest, equip, resource, or level action never edits campaign state locally. It sends an intent/request and updates from the next authoritative response or state snapshot.
+The design rule is simple: **the engine owns truth; Godot renders truth**. A rendered path, fog cell, animation or scene transition never becomes authoritative state.
 
 ## Requirements
 
 - Godot **4.7.1 stable** recommended.
-- A running `dnd-rpg-engine` API, defaulting to `http://127.0.0.1:8000`.
-- `AdvancedGameEngine` mode for Hero Creator and character lifecycle controls.
-- `WorldPlatformEngine` mode for actor-scoped runtime/knowledge snapshots. The player sheet still works without this optional layer.
+- `dnd-rpg-engine` API at `http://127.0.0.1:8000` by default.
+- `AdvancedGameEngine` for character lifecycle features.
+- `WorldPlatformEngine` for actor-scoped runtime snapshots and v0.3 visual bindings. Without it, the procedural tactical renderer and lifecycle UI continue to work.
 
 ## Run
 
-Start the D&D RPG engine first, then open this repository in Godot and run the project.
-
 ```bash
-# From the dnd-rpg-engine repository
+# From dnd-rpg-engine
 rpg-engine serve --host 127.0.0.1 --port 8000
 ```
 
-In the Godot lobby, change the server address from `http://127.0.0.1:8000` to the correct endpoint and select **Refresh**.
+Open this repository in Godot and run the project. The server endpoint can be changed from the campaign lobby.
 
-For a headless project validation pass:
+Headless validation:
 
 ```bash
 godot --headless --path . --editor --quit
+godot --headless --path . --quit-after 3
 ```
 
 ## Controls
 
 | Input | Action |
 |---|---|
-| Left click empty ground | Move hero |
+| Left click empty ground | Submit move intent |
 | Left click entity | Select / inspect |
 | Right click entity | Basic attack |
-| Middle drag | Pan tactical camera |
+| Middle drag | Pan |
 | Mouse wheel | Zoom |
 | `1` | Attack selected target |
-| `E` | Interact with selected target |
+| `E` | Interact |
 | `Space` | Wait |
-| `C` | Open Hero Creator / lifecycle view |
-| `Tab` | Toggle authoritative Player Runtime character sheet |
-| `Esc` | Return to campaign library |
+| `C` | Hero creator/lifecycle |
+| `Tab` | Player Runtime character sheet |
+| `Esc` | Campaign library |
 
-## Main project structure
+## Structure
 
 ```text
 autoload/
-  AppState.gd       Persistent endpoint, identity, campaign and selection state
-  RPGClient.gd      Non-blocking REST + WebSocket engine bridge
-  PlayerRuntime.gd  Authoritative player character/runtime HUD and lifecycle UI
+  AppState.gd
+  RPGClient.gd
+  VisualRuntime.gd
+  PlayerRuntime.gd
 
 game/
-  WorldView.gd      Tactical map renderer and world input
-
-scenes/
-  Main.tscn         Playable entry scene
+  WorldView.gd
 
 ui/
-  Main.gd           Lobby, Hero Creator, HUD, party, inspector and event feed
+  Main.gd
 
 docs/
-  PLAYER_RUNTIME.md Runtime authority model and extension contract
+  PLAYER_RUNTIME.md
+  VISUAL_RUNTIME.md
 ```
 
-## Engine surfaces used
+## Main engine surfaces
 
-The client integrates with:
+The client consumes campaign/session APIs, character lifecycle APIs, `GET /api/v1/campaigns/{campaign_id}/runtime?actor_id={actor_id}` in WorldPlatform mode, and `WS /api/v1/campaigns/{campaign_id}/ws`.
 
-- `GET /api/v1/campaigns`
-- `POST /api/v1/campaigns`
-- `POST /api/v1/campaigns/{campaign_id}/join`
-- `GET /api/v1/campaigns/{campaign_id}/characters`
-- `GET /api/v1/campaigns/{campaign_id}/characters/catalog`
-- `POST /api/v1/campaigns/{campaign_id}/characters`
-- `GET /api/v1/campaigns/{campaign_id}/characters/{actor_id}`
-- `POST /api/v1/campaigns/{campaign_id}/characters/{actor_id}/rest`
-- `POST /api/v1/campaigns/{campaign_id}/characters/{actor_id}/equip`
-- `POST /api/v1/campaigns/{campaign_id}/characters/{actor_id}/unequip`
-- `POST /api/v1/campaigns/{campaign_id}/characters/{actor_id}/resources/spend`
-- `POST /api/v1/campaigns/{campaign_id}/characters/{actor_id}/level-up`
-- `GET /api/v1/campaigns/{campaign_id}/runtime?actor_id={actor_id}` when WorldPlatform mode is available
-- `WS /api/v1/campaigns/{campaign_id}/ws`
+## Next
 
-The WebSocket sends `state` requests and command envelopes and consumes authoritative `state`, `event`, `ack`, and `error` messages.
-
-## Next presentation layer expansions
-
-The v0.2 runtime creates a safe base for typed server `available_actions`, authoritative target/range/LOS/cover overlays, dedicated inventory and spell/ability views, structured quest journal, dialogue, shop/loot, scene travel, encounter initiative/reactions, richer animation/VFX/audio, runtime visual bindings, imported campaign maps, and a GM-specific workspace without moving rules into Godot.
+The v0.3 foundation is ready for typed targeting/range/LOS/cover overlays, dedicated spell/ability and inventory views, structured quests/dialogue/shop/loot, richer scene-graph/tilemap bindings, 2D skeletal animation, a 3D host for `VisualBinding.model`, and a GM workspace without moving rules into Godot.
