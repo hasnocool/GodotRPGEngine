@@ -58,15 +58,18 @@ func create_campaign(name: String, time_mode: String = "hybrid") -> void:
 		var campaign: Dictionary = payload
 		var campaign_id := str(campaign.get("id", campaign.get("campaign_id", "")))
 		var owner_client_id := str(campaign.get("owner_client_id", ""))
+		if not campaign_id.is_empty():
+			AppState.set_campaign(campaign_id, str(campaign.get("name", name)))
 		if not owner_client_id.is_empty():
 			AppState.owner_client_id = owner_client_id
 			AppState.set_client_id(owner_client_id)
-		if not campaign_id.is_empty():
-			AppState.set_campaign(campaign_id, str(campaign.get("name", name)))
 		campaign_created.emit(campaign)
 	)
 
 func join_campaign(campaign_id: String, user_id: String = AppState.user_id, display_name: String = AppState.display_name) -> void:
+	_join_identity(campaign_id, user_id, display_name, Callable())
+
+func _join_identity(campaign_id: String, user_id: String, display_name: String, callback: Callable) -> void:
 	var body := {
 		"user_id": user_id,
 		"display_name": display_name,
@@ -86,6 +89,8 @@ func join_campaign(campaign_id: String, user_id: String = AppState.user_id, disp
 		if str(identity.get("role", "")) == "owner":
 			AppState.owner_client_id = joined_client_id
 		campaign_joined.emit(identity)
+		if callback.is_valid():
+			callback.call(identity)
 	)
 
 func list_characters(campaign_id: String = AppState.campaign_id) -> void:
@@ -104,22 +109,30 @@ func get_character_catalog(campaign_id: String = AppState.campaign_id) -> void:
 	)
 
 func create_character(build: Dictionary, campaign_id: String = AppState.campaign_id) -> void:
-	_rest("POST", "/api/v1/campaigns/%s/characters" % campaign_id.uri_encode(), build, "create_character", func(payload: Variant) -> void:
-		if payload is Dictionary:
-			character_created.emit(payload)
-		else:
-			request_failed.emit("create_character", "Engine returned an unexpected character payload")
+	var normalized_build := build.duplicate(true)
+	normalized_build["owner_id"] = AppState.user_id
+	_join_identity(campaign_id, AppState.user_id, AppState.display_name, func(_identity: Dictionary) -> void:
+		_rest("POST", "/api/v1/campaigns/%s/characters" % campaign_id.uri_encode(), normalized_build, "create_character", func(payload: Variant) -> void:
+			if payload is Dictionary:
+				character_created.emit(payload)
+			else:
+				request_failed.emit("create_character", "Engine returned an unexpected character payload")
+		)
 	)
 
-func connect_campaign(campaign_id: String, client_id: String = "") -> void:
+func connect_campaign(campaign_id: String, _client_id_hint: String = "") -> void:
 	disconnect_campaign()
 	_campaign_id = campaign_id
-	_client_id = client_id if not client_id.is_empty() else AppState.client_id
-	if _client_id.is_empty():
-		request_failed.emit("websocket", "Join the campaign before connecting")
-		return
-	_reconnect_attempt = 0
-	_open_websocket()
+	_set_connection_state(ConnectionState.CONNECTING)
+	_join_identity(campaign_id, AppState.user_id, AppState.display_name, func(identity: Dictionary) -> void:
+		_client_id = str(identity.get("client_id", ""))
+		if _client_id.is_empty():
+			request_failed.emit("websocket", "Join did not return a usable client ID")
+			_set_connection_state(ConnectionState.DISCONNECTED)
+			return
+		_reconnect_attempt = 0
+		_open_websocket()
+	)
 
 func _open_websocket() -> void:
 	_socket = WebSocketPeer.new()
