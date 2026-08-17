@@ -1,0 +1,35 @@
+# .github/workflows/godot-validate.yml
+name: Godot Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Godot 4.7.1
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+
+      - name: Show Godot version
+        run: godot --version
+
+      - name: Import and parse project
+        run: godot --headless --path . --editor --quit
+
+      - name: Boot smoke test
+        run: godot --headless --path . --quit-after 3
