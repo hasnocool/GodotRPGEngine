@@ -11,6 +11,8 @@ const DEFAULT_WS_BASE := "ws://127.0.0.1:8000"
 
 var api_base: String = DEFAULT_API_BASE
 var ws_base: String = DEFAULT_WS_BASE
+var user_id: String = "local"
+var display_name: String = "Godot Player"
 var client_id: String = ""
 var owner_client_id: String = ""
 var campaign_id: String = ""
@@ -37,9 +39,18 @@ func set_server_base(value: String) -> void:
 		ws_base = "ws://" + clean
 	_save_preferences()
 
-func set_campaign(id: String, display_name: String = "") -> void:
+func set_identity(new_user_id: String, new_display_name: String) -> void:
+	user_id = new_user_id.strip_edges() if not new_user_id.strip_edges().is_empty() else "local"
+	display_name = new_display_name.strip_edges() if not new_display_name.strip_edges().is_empty() else "Godot Player"
+	_save_preferences()
+
+func set_client_id(value: String) -> void:
+	client_id = value
+	_save_preferences()
+
+func set_campaign(id: String, display_name_value: String = "") -> void:
 	campaign_id = id
-	campaign_name = display_name
+	campaign_name = display_name_value
 	selected_entity_id = ""
 	campaign_changed.emit(id)
 
@@ -82,11 +93,15 @@ func _load_preferences() -> void:
 		return
 	api_base = str(cfg.get_value("network", "api_base", DEFAULT_API_BASE))
 	ws_base = str(cfg.get_value("network", "ws_base", DEFAULT_WS_BASE))
+	user_id = str(cfg.get_value("identity", "user_id", "local"))
+	display_name = str(cfg.get_value("identity", "display_name", "Godot Player"))
 	client_id = str(cfg.get_value("identity", "client_id", ""))
 
 func _save_preferences() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("network", "api_base", api_base)
 	cfg.set_value("network", "ws_base", ws_base)
+	cfg.set_value("identity", "user_id", user_id)
+	cfg.set_value("identity", "display_name", display_name)
 	cfg.set_value("identity", "client_id", client_id)
 	cfg.save("user://client.cfg")
