@@ -5,6 +5,7 @@ enum ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
 
 signal campaigns_received(campaigns: Array)
 signal campaign_created(campaign: Dictionary)
+signal campaign_joined(identity: Dictionary)
 signal characters_received(characters: Array)
 signal character_catalog_received(catalog: Dictionary)
 signal character_created(character: Dictionary)
@@ -22,7 +23,8 @@ var _request_counter := 0
 var _pending_commands: Dictionary = {}
 var _reconnect_attempt := 0
 var _next_reconnect_at := 0.0
-var _last_ping_at := 0.0
+var _state_dirty := false
+var _next_state_request_at := 0.0
 
 func _ready() -> void:
 	set_process(true)
@@ -44,24 +46,50 @@ func list_campaigns() -> void:
 	)
 
 func create_campaign(name: String, time_mode: String = "hybrid") -> void:
-	var body := {"name": name, "time_mode": time_mode}
+	var body := {
+		"name": name,
+		"owner_id": AppState.user_id,
+		"time_mode": time_mode,
+	}
 	_rest("POST", "/api/v1/campaigns", body, "create_campaign", func(payload: Variant) -> void:
 		if payload is not Dictionary:
 			request_failed.emit("create_campaign", "Engine returned an unexpected campaign payload")
 			return
 		var campaign: Dictionary = payload
 		var campaign_id := str(campaign.get("id", campaign.get("campaign_id", "")))
-		var owner_id := str(campaign.get("owner_client_id", ""))
-		if not owner_id.is_empty():
-			AppState.owner_client_id = owner_id
-			AppState.client_id = owner_id
+		var owner_client_id := str(campaign.get("owner_client_id", ""))
+		if not owner_client_id.is_empty():
+			AppState.owner_client_id = owner_client_id
+			AppState.set_client_id(owner_client_id)
 		if not campaign_id.is_empty():
 			AppState.set_campaign(campaign_id, str(campaign.get("name", name)))
 		campaign_created.emit(campaign)
 	)
 
+func join_campaign(campaign_id: String, user_id: String = AppState.user_id, display_name: String = AppState.display_name) -> void:
+	var body := {
+		"user_id": user_id,
+		"display_name": display_name,
+		"role": "player",
+		"actor_ids": [],
+	}
+	_rest("POST", "/api/v1/campaigns/%s/join" % campaign_id.uri_encode(), body, "join_campaign", func(payload: Variant) -> void:
+		if payload is not Dictionary:
+			request_failed.emit("join_campaign", "Engine returned an unexpected session identity")
+			return
+		var identity: Dictionary = payload
+		var joined_client_id := str(identity.get("client_id", ""))
+		if joined_client_id.is_empty():
+			request_failed.emit("join_campaign", "Engine did not return a client ID")
+			return
+		AppState.set_client_id(joined_client_id)
+		if str(identity.get("role", "")) == "owner":
+			AppState.owner_client_id = joined_client_id
+		campaign_joined.emit(identity)
+	)
+
 func list_characters(campaign_id: String = AppState.campaign_id) -> void:
-	_rest("GET", "/api/v1/campaigns/%s/characters" % campaign_id, {}, "characters", func(payload: Variant) -> void:
+	_rest("GET", "/api/v1/campaigns/%s/characters" % campaign_id.uri_encode(), {}, "characters", func(payload: Variant) -> void:
 		var characters: Array = []
 		if payload is Array:
 			characters = payload
@@ -71,12 +99,12 @@ func list_characters(campaign_id: String = AppState.campaign_id) -> void:
 	)
 
 func get_character_catalog(campaign_id: String = AppState.campaign_id) -> void:
-	_rest("GET", "/api/v1/campaigns/%s/characters/catalog" % campaign_id, {}, "character_catalog", func(payload: Variant) -> void:
+	_rest("GET", "/api/v1/campaigns/%s/characters/catalog" % campaign_id.uri_encode(), {}, "character_catalog", func(payload: Variant) -> void:
 		character_catalog_received.emit(payload if payload is Dictionary else {})
 	)
 
 func create_character(build: Dictionary, campaign_id: String = AppState.campaign_id) -> void:
-	_rest("POST", "/api/v1/campaigns/%s/characters" % campaign_id, build, "create_character", func(payload: Variant) -> void:
+	_rest("POST", "/api/v1/campaigns/%s/characters" % campaign_id.uri_encode(), build, "create_character", func(payload: Variant) -> void:
 		if payload is Dictionary:
 			character_created.emit(payload)
 		else:
@@ -88,20 +116,26 @@ func connect_campaign(campaign_id: String, client_id: String = "") -> void:
 	_campaign_id = campaign_id
 	_client_id = client_id if not client_id.is_empty() else AppState.client_id
 	if _client_id.is_empty():
-		_client_id = "godot_%s" % Time.get_ticks_usec()
-		AppState.client_id = _client_id
-	var url := "%s/api/v1/campaigns/%s/ws?client_id=%s" % [AppState.ws_base, campaign_id.uri_encode(), _client_id.uri_encode()]
+		request_failed.emit("websocket", "Join the campaign before connecting")
+		return
+	_reconnect_attempt = 0
+	_open_websocket()
+
+func _open_websocket() -> void:
+	_socket = WebSocketPeer.new()
+	var url := "%s/api/v1/campaigns/%s/ws?client_id=%s" % [AppState.ws_base, _campaign_id.uri_encode(), _client_id.uri_encode()]
 	_set_connection_state(ConnectionState.CONNECTING)
 	var error := _socket.connect_to_url(url)
 	if error != OK:
 		request_failed.emit("websocket", "Could not connect to campaign: %s" % error_string(error))
-		_set_connection_state(ConnectionState.DISCONNECTED)
+		_schedule_reconnect()
 
 func disconnect_campaign() -> void:
 	if _socket.get_ready_state() == WebSocketPeer.STATE_OPEN:
 		_socket.close(1000, "client navigation")
 	_socket = WebSocketPeer.new()
 	_pending_commands.clear()
+	_state_dirty = false
 	_reconnect_attempt = 0
 	_set_connection_state(ConnectionState.DISCONNECTED)
 
@@ -142,16 +176,17 @@ func _process(_delta: float) -> void:
 			if parsed is Dictionary:
 				_handle_ws_message(parsed)
 		var now := Time.get_ticks_msec() / 1000.0
-		if now - _last_ping_at >= 5.0:
-			_last_ping_at = now
-			_socket.send_text(JSON.stringify({"kind": "ping"}))
+		if _state_dirty and now >= _next_state_request_at:
+			_state_dirty = false
+			_next_state_request_at = now + 0.12
+			request_state()
 	elif ready_state == WebSocketPeer.STATE_CLOSED and _connection_state in [ConnectionState.CONNECTED, ConnectionState.CONNECTING]:
 		_schedule_reconnect()
 
 	if _connection_state == ConnectionState.RECONNECTING:
-		var now := Time.get_ticks_msec() / 1000.0
-		if now >= _next_reconnect_at:
-			connect_campaign(_campaign_id, _client_id)
+		var reconnect_now := Time.get_ticks_msec() / 1000.0
+		if reconnect_now >= _next_reconnect_at:
+			_open_websocket()
 
 func _handle_ws_message(message: Dictionary) -> void:
 	match str(message.get("kind", "")):
@@ -163,27 +198,31 @@ func _handle_ws_message(message: Dictionary) -> void:
 		"event":
 			var event: Dictionary = message.get("event", message.get("payload", {}))
 			event_received.emit(event)
+			_mark_state_dirty()
 		"ack":
 			var request_id := str(message.get("request_id", ""))
 			_pending_commands.erase(request_id)
 			command_acknowledged.emit(message)
+			_mark_state_dirty()
 		"error":
 			var request_id := str(message.get("request_id", ""))
 			_pending_commands.erase(request_id)
 			request_failed.emit("command", str(message.get("detail", "Unknown engine error")))
-		"pong":
-			pass
+
+func _mark_state_dirty() -> void:
+	_state_dirty = true
 
 func _resolve_player_actor(state: Dictionary) -> void:
 	var campaign: Dictionary = state.get("campaign", {})
 	var entities: Dictionary = campaign.get("entities", {})
 	for entity_id in entities:
 		var entity: Dictionary = entities[entity_id]
-		if str(entity.get("controller", "")) == "human":
-			var owner_id := str(entity.get("owner_id", entity.get("owner_client_id", "")))
-			if owner_id.is_empty() or owner_id == _client_id:
-				AppState.set_player_actor(str(entity_id))
-				return
+		if str(entity.get("controller", "")) != "human":
+			continue
+		var owner_id := str(entity.get("owner_id", entity.get("owner_client_id", "")))
+		if owner_id.is_empty() or owner_id == AppState.user_id or owner_id == _client_id:
+			AppState.set_player_actor(str(entity_id))
+			return
 
 func _schedule_reconnect() -> void:
 	if _campaign_id.is_empty():
@@ -234,7 +273,8 @@ func _rest(method: String, path: String, body: Dictionary, context: String, call
 		"DELETE": http_method = HTTPClient.METHOD_DELETE
 	if method != "GET" and method != "DELETE":
 		headers.append("Content-Type: application/json")
-	var error := request.request(AppState.api_base + path, headers, http_method, JSON.stringify(body) if method != "GET" and method != "DELETE" else "")
+	var request_body := JSON.stringify(body) if method != "GET" and method != "DELETE" else ""
+	var error := request.request(AppState.api_base + path, headers, http_method, request_body)
 	if error != OK:
 		request.queue_free()
 		request_failed.emit(context, "Could not start request: %s" % error_string(error))
