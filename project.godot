@@ -10,6 +10,7 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 [autoload]
 AppState="*res://autoload/AppState.gd"
 RPGClient="*res://autoload/RPGClient.gd"
+PlayerRuntime="*res://autoload/PlayerRuntime.gd"
 
 [display]
 window/size/viewport_width=1600
